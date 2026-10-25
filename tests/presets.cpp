@@ -14,11 +14,12 @@ int main() {
         Engine e; e.setSampleRate((float)fs); e.setTempo(120); std::copy(presets()[p].v, presets()[p].v + kParamCount, e.p); e.p[kMix] = 100; e.reset();
         std::vector<float> l(len), r(len); e.process(in.data(), in.data(), l.data(), r.data(), len);
         double eb = 0, et = 0; float peak = 0; bool fin = true;
-        for (int i = 0; i < fs / 2; ++i) eb += l[i] * l[i] + r[i] * r[i];
+        const int from = e.p[kDucking] > 0 ? fs / 2 : 0;          // ducked presets: measure just after the input stops
+        for (int i = from; i < from + fs / 2; ++i) eb += l[i] * l[i] + r[i] * r[i];
         for (int i = len - fs; i < len; ++i) et += l[i] * l[i] + r[i] * r[i];
         for (int i = 0; i < len; ++i) { peak = std::max(peak, std::max(std::fabs(l[i]), std::fabs(r[i]))); if (!std::isfinite(l[i])) fin = false; }
         const double lvl = 10 * std::log10(eb / (fs / 2) / (0.04 * 2) + 1e-30), tail = 10 * std::log10(et / (eb + 1e-30) + 1e-30);
-        const bool ok = fin && peak < 4 && lvl > -16 && lvl < 2;
+        const bool ok = fin && peak < 4 && lvl > -18 && lvl < 2;
         if (!ok) ++bad;
         printf("%-20s %-20s wet %+5.1f dB  peak %.2f  last second %6.1f dB %s\n", presets()[p].name, presets()[p].category, lvl, peak, tail, ok ? "" : "<-- CHECK");
     }

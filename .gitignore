@@ -4,11 +4,12 @@ bin/
 build/
 dist/
 *.o
+*.wav
 tests/features
+tests/features2
+tests/compat
+tests/irmatch
 tests/fuzz
 tests/presets
 tests/bench
-tests/features
-tests/fuzz
-tests/presets
-tests/bench
+tests/*.log

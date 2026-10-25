@@ -23,13 +23,14 @@ public:
 protected:
     const char* getLabel() const override { return "Geode"; }
     const char* getDescription() const override {
-        return "Algorithmic reverb with a stepless space control, decay rate, brightness, character, distance and stereo width, "
-               "a 6-band decay rate EQ, a 6-band post EQ and tempo-synced predelay.";
+        return "Algorithmic reverb with Modern, Vintage and Plate algorithms, a stepless space control, decay rate, brightness, "
+               "character, distance, stereo width, thickness, ducking, auto gate and freeze, a 6-band decay rate EQ, a 6-band "
+               "post EQ with mid/side, tempo-synced predelay and impulse response import.";
     }
     const char* getMaker() const override { return "Epsilon Audio"; }
     const char* getHomePage() const override { return "https://epsilonrecords.com"; }
     const char* getLicense() const override { return "MIT"; }
-    uint32_t getVersion() const override { return d_version(1, 0, 0); }
+    uint32_t getVersion() const override { return d_version(2, 0, 0); }
 
     void initAudioPort(bool input, uint32_t index, AudioPort& port) override {
         port.groupId = kPortGroupStereo;

@@ -4,6 +4,7 @@
 #include "UserPresets.hpp"
 #include "ResizeHandle.hpp"
 #include "Help.hpp"
+#include "IrMatch.hpp"
 #include <chrono>
 #include <cctype>
 #include <cmath>
@@ -34,7 +35,7 @@ static double nowSec() { return std::chrono::duration<double>(std::chrono::stead
 using namespace geode;
 using DGL_NAMESPACE::ResizeHandle;
 
-static constexpr float W = 1100.f, H = 700.f;
+static constexpr float W = 1100.f, H = 800.f;
 
 #define C_BG        Color(0x10, 0x0f, 0x13)
 #define C_PANEL     Color(0x19, 0x17, 0x1e)
@@ -53,7 +54,7 @@ static Color withAlpha(const Color& c, float a) { Color r(c); r.alpha = a; retur
 
 // ---------------------------------------------------------------- layout
 static constexpr float DX = 16, DY = 64, DW = 1068, DH = 330;           // reverb display
-static constexpr float PY = 404, PH = 280;                               // bottom panels
+static constexpr float PY = 404, PH = 382;                               // bottom panels
 static constexpr float AX = 16, AW = 640, BX = 664, BW = 420;            // main controls, band editor
 static constexpr float SEG_H = 24;
 static constexpr float FMIN = 20.f, FMAX = 20000.f;
@@ -62,31 +63,39 @@ static constexpr float YC = (PTOP + PBOT) / 2, HALF = (PBOT - PTOP) / 2;
 static constexpr float L_RANGE = 2.5f, DB_RANGE = 24.f;
 static constexpr int kBands = kDecayBands + kPostBands;           // band ids: 0-5 decay EQ, 6-11 post EQ
 
-enum Role { RUsed, ROn, RShape, RFreq, RGain, RQ, RSlope, kNumRoles };
-enum WType { Knob, Toggle, Segment, DelButton };
+enum Role { RUsed, ROn, RShape, RFreq, RGain, RQ, RSlope, RPlace, kNumRoles };
+enum WType { Knob, Toggle, Segment, DelButton, Button };
 // role >= 0: a control of the selected band; role < 0: a global param
 struct Ctl { WType type; int role; uint32_t param; float x, y, r; const char* label; };
 
 static std::vector<Ctl> buildControls() {
     std::vector<Ctl> c;
-    c.push_back({ Knob, -1, kSpace,      AX + 72,  PY + 80, 40, "SPACE" });
-    c.push_back({ Knob, -1, kDecayRate,  AX + 186, PY + 80, 30, "DECAY RATE" });
-    c.push_back({ Knob, -1, kBrightness, AX + 286, PY + 80, 30, "BRIGHTNESS" });
-    c.push_back({ Knob, -1, kCharacter,  AX + 386, PY + 80, 30, "CHARACTER" });
-    c.push_back({ Knob, -1, kDistance,   AX + 486, PY + 80, 30, "DISTANCE" });
-    c.push_back({ Knob, -1, kWidth,      AX + 586, PY + 80, 30, "STEREO WIDTH" });
-    c.push_back({ Knob, -1, kPredelay,   AX + 72,  PY + 216, 24, "PREDELAY" });
-    c.push_back({ Toggle, -1, kPredelaySync, AX + 142, PY + 216, 0, "SYNC" });
-    c.push_back({ Knob, -1, kMix,        AX + 340, PY + 216, 28, "MIX" });
-    c.push_back({ Toggle, -1, kMixLock,  AX + 410, PY + 216, 0, "LOCK" });
-    c.push_back({ Knob, -1, kOutput,     AX + 576, PY + 216, 24, "OUTPUT" });
+    c.push_back({ Segment, -1, kAlgorithm, AX + 170, PY + 28, 276, "" });
+    c.push_back({ Button, -1, kFreeze,     AX + AW - 82, PY + 28, 120, "FREEZE" });
+    c.push_back({ Knob, -1, kSpace,      AX + 72,  PY + 118, 40, "SPACE" });
+    c.push_back({ Knob, -1, kDecayRate,  AX + 186, PY + 118, 30, "DECAY RATE" });
+    c.push_back({ Knob, -1, kBrightness, AX + 286, PY + 118, 30, "BRIGHTNESS" });
+    c.push_back({ Knob, -1, kCharacter,  AX + 386, PY + 118, 30, "CHARACTER" });
+    c.push_back({ Knob, -1, kDistance,   AX + 486, PY + 118, 30, "DISTANCE" });
+    c.push_back({ Knob, -1, kWidth,      AX + 586, PY + 118, 30, "STEREO WIDTH" });
+    c.push_back({ Knob, -1, kPredelay,   AX + 60,  PY + 248, 24, "PREDELAY" });
+    c.push_back({ Toggle, -1, kPredelaySync, AX + 122, PY + 248, 0, "SYNC" });
+    c.push_back({ Knob, -1, kThickness,  AX + 262, PY + 248, 24, "THICKNESS" });
+    c.push_back({ Knob, -1, kDucking,    AX + 350, PY + 248, 24, "DUCKING" });
+    c.push_back({ Knob, -1, kMix,        AX + 446, PY + 248, 28, "MIX" });
+    c.push_back({ Toggle, -1, kMixLock,  AX + 503, PY + 248, 0, "LOCK" });
+    c.push_back({ Knob, -1, kOutput,     AX + 600, PY + 248, 24, "OUTPUT" });
+    c.push_back({ Toggle, -1, kAutoGate, AX + 40,  PY + 340, 0, "AUTO GATE" });
+    c.push_back({ Knob, -1, kGateThreshold, AX + 210, PY + 336, 16, "THRESHOLD" });
+    c.push_back({ Knob, -1, kGateHold,   AX + 290, PY + 336, 16, "HOLD" });
     c.push_back({ Toggle, ROn, 0, BX + 30, PY + 28, 0, "" });
     c.push_back({ DelButton, -1, 0, BX + BW - 26, PY + 28, 0, "" });
     c.push_back({ Segment, RShape, 0, BX + BW / 2, PY + 70, 392, "" });
     c.push_back({ Segment, RSlope, 0, BX + BW / 2, PY + 108, 300, "" });
-    c.push_back({ Knob, RFreq, 0, BX + 80,  PY + 192, 28, "FREQUENCY" });
-    c.push_back({ Knob, RGain, 0, BX + 210, PY + 192, 28, "GAIN" });
-    c.push_back({ Knob, RQ,    0, BX + 340, PY + 192, 28, "Q" });
+    c.push_back({ Segment, RPlace, 0, BX + BW / 2, PY + 156, 360, "" });
+    c.push_back({ Knob, RFreq, 0, BX + 80,  PY + 250, 28, "FREQUENCY" });
+    c.push_back({ Knob, RGain, 0, BX + 210, PY + 250, 28, "GAIN" });
+    c.push_back({ Knob, RQ,    0, BX + 340, PY + 250, 28, "Q" });
     return c;
 }
 static const std::vector<Ctl>& controls() { static std::vector<Ctl> c = buildControls(); return c; }
@@ -94,16 +103,18 @@ static const std::vector<Ctl>& controls() { static std::vector<Ctl> c = buildCon
 static constexpr float PS_X = 300.f, PS_Y = 20.f, PS_W = 250.f, PS_H = 28.f, PS_ARROW = 30.f;
 static constexpr float A_X = 562.f, AB_W = 30.f, COPY_X = 626.f, COPY_W = 44.f;
 static constexpr float UNDO_X = 684.f, REDO_X = 738.f, UR_W = 50.f, LEARN_X = 798.f, LEARN_W = 66.f, MIDI_X = 870.f, MIDI_W = 52.f, HELP_X = 928.f, HELP_W = 48.f;
-static constexpr float PM_COLW = 170.f, PM_ROW = 23.f, PM_HEAD = 22.f, PM_PAD = 8.f;
+static constexpr float PM_COLW = 150.f, PM_ROW = 23.f, PM_HEAD = 22.f, PM_PAD = 8.f;
 static constexpr int ANA_N = 4096;
 // display pills
 static constexpr float LP_X = DX + 12, LP_Y = DY + 10, LP_H = 22, LP_W0 = 124, LP_W1 = 84, AN_W = 92;
+static constexpr float AN_X = DX + DW - 12 - AN_W, PI_W = 66, PI_X = AN_X - 6 - PI_W, IR_W = 104, IR_X = PI_X - 6 - IR_W;
 
 static bool isPost(int id) { return id >= kDecayBands; }
 static uint32_t bandParam(int id, int role) {
     if (id < 0 || id >= kBands) return kParamCount;
-    if (!isPost(id)) { static const int m[kNumRoles] = { kDUsed, kDOn, kDShape, kDFreq, kDAmount, kDQ, -1 }; return m[role] < 0 ? kParamCount : dp(id, m[role]); }
-    static const int m[kNumRoles] = { kPUsed, kPOn, kPShape, kPFreq, kPGain, kPQ, kPSlope };
+    if (!isPost(id)) { static const int m[kNumRoles] = { kDUsed, kDOn, kDShape, kDFreq, kDAmount, kDQ, -1, -1 }; return m[role] < 0 ? kParamCount : dp(id, m[role]); }
+    if (role == RPlace) return placeParam(id - kDecayBands);
+    static const int m[kNumRoles] = { kPUsed, kPOn, kPShape, kPFreq, kPGain, kPQ, kPSlope, -1 };
     return pp(id - kDecayBands, m[role]);
 }
 static cpx postRespAt(const float* v, float hz) {
@@ -233,6 +244,8 @@ protected:
         case kSpace: snprintf(b, n, "%s", kSpaces[spaceIndex(v)].name); return;
         case kOutput: snprintf(b, n, "%+.1f dB", v); return;
         case kPredelay: snprintf(b, n, v < 10 ? "%.1f ms" : "%.0f ms", v); return;
+        case kGateThreshold: snprintf(b, n, "%.0f dB", v); return;
+        case kGateHold: if (v >= 1000) snprintf(b, n, "%.2f s", v / 1000); else snprintf(b, n, "%.0f ms", v); return;
         default: break;
         }
         const int df = decayFieldOf(p), pf = postFieldOf(p);
@@ -256,7 +269,7 @@ protected:
         if (suf == "k" || suf == "khz") x *= 1000;
         if (p == kSpace) x = x > 1 ? x / 100.0 : x;
         if (decayFieldOf(p) == kDAmount) x = std::log2(std::max(1.0, x) / 100.0);
-        if (p == kPredelay && suf == "s") x *= 1000;
+        if ((p == kPredelay || p == kGateHold) && suf == "s") x *= 1000;
         out = (float)x; return true;
     }
     uint32_t effParam(const Ctl& c) const {
@@ -268,13 +281,15 @@ protected:
         if (c.type == DelButton) return primary() >= 0;
         if (c.role < 0) return true;
         if (primary() < 0) return false;
-        if (c.role == RSlope) return isPost(primary());
+        if (c.role == RSlope || c.role == RPlace) return isPost(primary());
         return true;
     }
     bool dimmed(const Ctl& c) const {
+        if (c.role < 0 && (c.param == kGateThreshold || c.param == kGateHold)) return val[kAutoGate] < 0.5f;
         if (c.role < 0 || primary() < 0) return false;
         const int id = primary();
         if (c.role == RSlope) return !isCut(id);
+        if (c.role == RPlace) return !bandOn(id);
         if (c.role == RGain) return isCut(id) || (!isPost(id) && shapeOf(id) == kDNotch);
         if (c.role != ROn && !bandOn(id)) return true;
         return false;
@@ -303,7 +318,7 @@ protected:
         drawLogo();
         fontSize(22); textLetterSpacing(9); fillColor(C_TEXT); textAlign(ALIGN_LEFT | ALIGN_MIDDLE); text(58, 34, "GEODE", nullptr);
         fontSize(10); textLetterSpacing(2.5f); fillColor(C_DIM); text(188, 30, "REVERB", nullptr);
-        fontSize(7.5f); textLetterSpacing(1.8f); fillColor(C_FAINT); text(188, 42, "EPSILON AUDIO  1.0", nullptr);
+        fontSize(7.5f); textLetterSpacing(1.8f); fillColor(C_FAINT); text(188, 42, "EPSILON AUDIO  2.0", nullptr);
         drawPresetBar();
         for (int k = 0; k < 2; ++k) {
             const float x = A_X + k * AB_W; const bool on = abSlot == k, hot = hoverHeader == 6 + k;
@@ -320,7 +335,10 @@ protected:
 
         drawDisplay();
         panel(AX, PY, AW, PH); panel(BX, PY, BW, PH);
-        beginPath(); moveTo(AX + 14, PY + 160); lineTo(AX + AW - 14, PY + 160); strokeColor(C_LINE); strokeWidth(1); stroke();
+        beginPath(); moveTo(AX + 14, PY + 196); lineTo(AX + AW - 14, PY + 196); moveTo(AX + 14, PY + 312); lineTo(AX + AW - 14, PY + 312); strokeColor(C_LINE); strokeWidth(1); stroke();
+        fontSize(7.5f); textLetterSpacing(1.8f); textAlign(ALIGN_LEFT | ALIGN_MIDDLE); fillColor(C_FAINT); text(AX + 16, PY + 10, "ALGORITHM", nullptr);
+        if (primary() >= 0 && isPost(primary())) { fontSize(7.5f); textLetterSpacing(1.8f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(C_FAINT); text(BX + BW / 2, PY + 136, "CHANNEL", nullptr); }
+        if (val[kFreeze] > 0.5f) { fontSize(9); textLetterSpacing(1.8f); textAlign(ALIGN_RIGHT | ALIGN_MIDDLE); fillColor(C_ACC); text(PX1, PTOP + 18, "FROZEN", nullptr); }
         drawBandPanel();
         const std::vector<Ctl>& cs = controls();
         for (int i = 0; i < (int)cs.size(); ++i) if (visible(cs[i])) drawCtl(cs[i], i == active || i == hover);
@@ -331,6 +349,7 @@ protected:
         if (helpOpen) drawHelp();
         else if (tipShown && gTipsOn) drawTooltip();
         restore();
+        if (irBusy) irShown = true;
     }
     void drawLogo() {
         // a cracked-open geode: a stone shell with crystals pointing inwards
@@ -376,7 +395,17 @@ protected:
         strokeColor(Color(255, 255, 255, 8 / 255.f)); strokeWidth(1); stroke();
         beginPath(); moveTo(PX0, YC); lineTo(PX1, YC); strokeColor(Color(255, 255, 255, 20 / 255.f)); stroke();
         fontSize(8.5f); textLetterSpacing(0.8f); fillColor(C_FAINT); textAlign(ALIGN_CENTER | ALIGN_BOTTOM);
-        for (int i = 0; i < 10; ++i) text(xOfHz(grid[i]), DY + DH - 5, gl[i], nullptr);
+        if (val[kPiano] > 0.5f) {
+            // piano scale: a keyboard along the bottom, C notes labelled (A4 = 440 Hz)
+            const float ky = PBOT - 9;
+            for (int note = 12; note <= 135; ++note) {           // C0 .. D#10
+                const float f = 440.f * std::exp2((note - 69) / 12.f); if (f < FMIN || f > FMAX) continue;
+                const int pc = note % 12; const bool black = pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
+                const float x0 = xOfHz(f * std::exp2(-1.f / 24.f)), x1 = xOfHz(f * std::exp2(1.f / 24.f));
+                beginPath(); rect(x0 + 0.3f, ky, std::max(0.6f, x1 - x0 - 0.6f), 9); fillColor(black ? Color(0x1c, 0x19, 0x22) : Color(0x4a, 0x45, 0x55)); fill();
+                if (pc == 0) { char nb[8]; snprintf(nb, sizeof nb, "C%d", note / 12 - 1); text(xOfHz(f), DY + DH - 5, nb, nullptr); }
+            }
+        } else for (int i = 0; i < 10; ++i) text(xOfHz(grid[i]), DY + DH - 5, gl[i], nullptr);
         // scales: post EQ dB (left), decay time (right)
         const bool post = layer == 1;
         const float T0 = decayTime(val);
@@ -466,7 +495,9 @@ protected:
         // pills: which EQ the mouse edits, analyser
         pill(LP_X, LP_W0, "DECAY RATE EQ", layer == 0, hoverPill == 1, C_DECAY);
         pill(LP_X + LP_W0 + 6, LP_W1, "POST EQ", layer == 1, hoverPill == 2, C_ACC);
-        pill(DX + DW - 12 - AN_W, AN_W, "ANALYZER", val[kAnalyzer] > 0.5f, hoverPill == 3, C_ANA);
+        pill(AN_X, AN_W, "ANALYZER", val[kAnalyzer] > 0.5f, hoverPill == 3, C_ANA);
+        pill(PI_X, PI_W, "PIANO", val[kPiano] > 0.5f, hoverPill == 4, C_ANA);
+        pill(IR_X, IR_W, irBusy ? "ANALYSING..." : "IMPORT IR", irBusy, hoverPill == 5, C_DECAY);
         // the space, and its decay time
         char b[80]; snprintf(b, sizeof b, "%s   ·   %.2f s at 1 kHz", kSpaces[spaceIndex(val[kSpace])].name, dc.timeAt(1000.f));
         fontSize(10.5f); textLetterSpacing(0.8f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(C_DIM); text(DX + DW / 2, LP_Y + LP_H / 2 + 0.5f, b, nullptr);
@@ -480,7 +511,9 @@ protected:
         if (y < LP_Y || y > LP_Y + LP_H) return 0;
         if (x >= LP_X && x < LP_X + LP_W0) return 1;
         if (x >= LP_X + LP_W0 + 6 && x < LP_X + LP_W0 + 6 + LP_W1) return 2;
-        if (x >= DX + DW - 12 - AN_W && x < DX + DW - 12) return 3;
+        if (x >= AN_X && x < AN_X + AN_W) return 3;
+        if (x >= PI_X && x < PI_X + PI_W) return 4;
+        if (x >= IR_X && x < IR_X + IR_W) return 5;
         return 0;
     }
     void drawBandPanel() {
@@ -509,7 +542,11 @@ protected:
         static const char* const pshape[] = { "BELL", "LO SHELF", "HI SHELF", "LO CUT", "HI CUT" };
         static const char* const slope[] = { "6", "12", "24", "48", "96" };
         if (c.role == RShape) { const bool post = primary() >= 0 ? isPost(primary()) : layer == 1; n = post ? 5 : 4; return post ? pshape : dshape; }
+        static const char* const place[] = { "STEREO", "MID", "SIDE", "LEFT", "RIGHT" };
+        static const char* const alg[] = { "MODERN", "VINTAGE", "PLATE" };
         if (c.role == RSlope) { n = 5; return slope; }
+        if (c.role == RPlace) { n = kNumPlaces; return place; }
+        if (c.param == kAlgorithm && c.role < 0) { n = kNumAlgorithms; return alg; }
         n = 0; return nullptr;
     }
     void drawCtl(const Ctl& c, bool hot) {
@@ -547,6 +584,15 @@ protected:
                 fontSize(9); textLetterSpacing(1.4f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(i == cur ? C_BG : (dim ? C_FAINT : C_DIM)); text(x + sw / 2, c.y + 0.5f, names[i], nullptr);
             }
             if (c.role == RSlope) { fontSize(7.5f); textLetterSpacing(1.6f); textAlign(ALIGN_LEFT | ALIGN_MIDDLE); fillColor(C_FAINT); text(c.x + c.r / 2 + 8, c.y, "DB/OCT", nullptr); }
+            break; }
+        case Button: {
+            const bool on = val[p] > 0.5f;
+            beginPath(); roundedRect(c.x - c.r / 2, c.y - 13, c.r, 26, 13); fillColor(on ? withAlpha(C_ACC, 0.85f) : (hot ? C_PANEL_HI : C_PANEL)); fill(); strokeColor(on || hot ? C_ACC : C_LINE); strokeWidth(1); stroke();
+            // a small snowflake
+            const float sx = c.x - c.r / 2 + 20, sy = c.y;
+            beginPath(); for (int k = 0; k < 3; ++k) { const float a = k * kPi / 3; moveTo(sx - 6 * std::cos(a), sy - 6 * std::sin(a)); lineTo(sx + 6 * std::cos(a), sy + 6 * std::sin(a)); }
+            strokeColor(on ? C_BG : C_DIM); strokeWidth(1.4f); stroke();
+            fontSize(9.5f); textLetterSpacing(2.2f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(on ? C_BG : C_DIM); text(c.x + 8, c.y + 0.5f, c.label, nullptr);
             break; }
         case DelButton: {
             beginPath(); roundedRect(c.x - 14, c.y - 12, 28, 24, 5); fillColor(hot ? withAlpha(C_DEL, 0.3f) : C_PANEL_HI); fill(); strokeColor(hot ? C_DEL : C_LINE); strokeWidth(1); stroke();
@@ -622,23 +668,50 @@ protected:
         fontSize(12); textLetterSpacing(1.f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(presetHover == 1 || menuOpen ? C_TEXT : Color(0xd6, 0xd2, 0xdc));
         text(x + w / 2, y + h / 2 + 0.5f, name.c_str(), nullptr);
     }
+    // preset browser: categories, user presets and favourites in columns; typing searches names and categories.
+    // kind: 0 factory, 1 user, 2 save button, 3 search field, 4 favourite (idx into favs)
     struct MRect { float x, y, w, h; int kind; int idx; };
+    static std::string lower(const std::string& s) { std::string r(s); for (char& c : r) c = (char)std::tolower((unsigned char)c); return r; }
+    std::string favKey(int kind, int idx) const { return kind == 0 ? std::string("f:") + presets()[idx].name : (kind == 1 ? "u:" + userPresets[idx] : (idx < (int)favs.size() ? favs[idx] : std::string())); }
+    bool isFav(const std::string& k) const { return std::find(favs.begin(), favs.end(), k) != favs.end(); }
+    void toggleFav(const std::string& k) {
+        if (k.empty()) return;
+        auto it = std::find(favs.begin(), favs.end(), k); if (it != favs.end()) favs.erase(it); else favs.push_back(k);
+        saveFavourites(favs); repaint();
+    }
+    static constexpr int kMenuCols = kNumCategories + 2, kMenuRows = 16;
     void menuLayout(float& mx, float& my, float& mw, float& mh, std::vector<MRect>& items) const {
-        const int cols = kNumCategories + 1;
-        mw = PM_COLW * cols + 2 * PM_PAD; mx = std::min(W - mw - 8, std::max(8.f, PS_X + PS_W / 2 - mw / 2)); my = PS_Y + PS_H + 4;
+        mw = PM_COLW * kMenuCols + 2 * PM_PAD; mx = std::min(W - mw - 8, std::max(8.f, PS_X + PS_W / 2 - mw / 2)); my = PS_Y + PS_H + 4;
         items.clear();
         const float top = my + PM_PAD + PM_ROW + 6 + PM_HEAD;
-        int rows[kNumCategories + 1] = {}; int maxRows = 1;
-        for (uint32_t i = 0; i < kNumPresets; ++i) {
-            const char* cat = presets()[i].category;
-            if (std::strcmp(cat, "Init") == 0) { items.push_back({ mx + PM_PAD, my + PM_PAD, PM_COLW - 4, PM_ROW, 0, (int)i }); continue; }
-            for (int c = 0; c < kNumCategories; ++c)
-                if (std::strcmp(cat, kCategories[c]) == 0) { items.push_back({ mx + PM_PAD + c * PM_COLW, top + rows[c] * PM_ROW, PM_COLW - 4, PM_ROW, 0, (int)i }); maxRows = std::max(maxRows, ++rows[c]); }
-        }
-        for (int u = 0; u < (int)userPresets.size() && u < 16; ++u) items.push_back({ mx + PM_PAD + kNumCategories * PM_COLW, top + u * PM_ROW, PM_COLW - 4, PM_ROW, 1, u });
-        maxRows = std::max(maxRows, std::min(16, (int)userPresets.size()));
+        int maxRows = 1;
+        items.push_back({ mx + PM_PAD + PM_COLW, my + PM_PAD, 300, PM_ROW, 3, 0 });
         items.push_back({ mx + mw - PM_PAD - 150, my + PM_PAD, 150, PM_ROW, 2, 0 });
+        if (!query.empty()) {
+            const std::string q = lower(query); int k = 0;
+            auto place = [&](int kind, int idx) { const int col = k / kMenuRows, row = k % kMenuRows; if (col >= kMenuCols) return; items.push_back({ mx + PM_PAD + col * PM_COLW, top + row * PM_ROW, PM_COLW - 4, PM_ROW, kind, idx }); maxRows = std::max(maxRows, row + 1); ++k; };
+            for (uint32_t i = 0; i < kNumPresets; ++i) if (lower(presets()[i].name).find(q) != std::string::npos || lower(presets()[i].category).find(q) != std::string::npos) place(0, (int)i);
+            for (int u = 0; u < (int)userPresets.size(); ++u) if (lower(userPresets[u]).find(q) != std::string::npos || std::string("user").find(q) != std::string::npos) place(1, u);
+        } else {
+            int rows[kNumCategories] = {};
+            for (uint32_t i = 0; i < kNumPresets; ++i) {
+                const char* cat = presets()[i].category;
+                if (std::strcmp(cat, "Init") == 0) { items.push_back({ mx + PM_PAD, my + PM_PAD, PM_COLW - 4, PM_ROW, 0, (int)i }); continue; }
+                for (int c = 0; c < kNumCategories; ++c)
+                    if (std::strcmp(cat, kCategories[c]) == 0) { items.push_back({ mx + PM_PAD + c * PM_COLW, top + rows[c] * PM_ROW, PM_COLW - 4, PM_ROW, 0, (int)i }); maxRows = std::max(maxRows, ++rows[c]); }
+            }
+            for (int u = 0; u < (int)userPresets.size() && u < kMenuRows; ++u) items.push_back({ mx + PM_PAD + kNumCategories * PM_COLW, top + u * PM_ROW, PM_COLW - 4, PM_ROW, 1, u });
+            maxRows = std::max(maxRows, std::min(kMenuRows, (int)userPresets.size()));
+            for (int f = 0; f < (int)favs.size() && f < kMenuRows; ++f) items.push_back({ mx + PM_PAD + (kNumCategories + 1) * PM_COLW, top + f * PM_ROW, PM_COLW - 4, PM_ROW, 4, f });
+            maxRows = std::max(maxRows, std::min(kMenuRows, (int)favs.size()));
+        }
         mh = PM_PAD + PM_ROW + 6 + PM_HEAD + maxRows * PM_ROW + PM_PAD;
+    }
+    std::string itemLabel(const MRect& r) const {
+        if (r.kind == 0) return presets()[r.idx].name;
+        if (r.kind == 1) return userPresets[r.idx];
+        if (r.kind == 4 && r.idx < (int)favs.size()) return favs[r.idx].substr(2);
+        return "";
     }
     void drawPresetMenu() {
         float mx, my, mw, mh; std::vector<MRect> items; menuLayout(mx, my, mw, mh, items);
@@ -646,11 +719,19 @@ protected:
         beginPath(); roundedRect(mx, my, mw, mh, 6); fillColor(C_PANEL_HI); fill(); strokeColor(C_LINE); strokeWidth(1); stroke();
         beginPath(); moveTo(mx + PM_PAD, my + PM_PAD + PM_ROW + 3); lineTo(mx + mw - PM_PAD, my + PM_PAD + PM_ROW + 3); strokeColor(C_LINE); stroke();
         fontSize(8.5f); textLetterSpacing(1.8f); textAlign(ALIGN_LEFT | ALIGN_MIDDLE);
-        for (int c = 0; c <= kNumCategories; ++c) {
-            std::string up = c < kNumCategories ? kCategories[c] : "User"; for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
-            fillColor(c < kNumCategories ? C_ACC : C_DECAY); text(mx + PM_PAD + c * PM_COLW + 12, my + PM_PAD + PM_ROW + 6 + PM_HEAD / 2, up.c_str(), nullptr);
+        const float hy = my + PM_PAD + PM_ROW + 6 + PM_HEAD / 2;
+        if (query.empty()) {
+            for (int c = 0; c < kMenuCols; ++c) {
+                std::string up = c < kNumCategories ? kCategories[c] : (c == kNumCategories ? "User" : "Favourites"); for (char& ch : up) ch = (char)std::toupper((unsigned char)ch);
+                fillColor(c < kNumCategories ? C_ACC : C_DECAY); text(mx + PM_PAD + c * PM_COLW + 12, hy, up.c_str(), nullptr);
+            }
+            fontSize(10); textLetterSpacing(0.4f); fillColor(C_FAINT);
+            if (userPresets.empty()) text(mx + PM_PAD + kNumCategories * PM_COLW + 12, hy + PM_HEAD / 2 + PM_ROW / 2, "(none saved yet)", nullptr);
+            if (favs.empty()) text(mx + PM_PAD + (kNumCategories + 1) * PM_COLW + 12, hy + PM_HEAD / 2 + PM_ROW / 2, "(click a star)", nullptr);
+        } else {
+            int found = 0; for (const MRect& r : items) if (r.kind == 0 || r.kind == 1) ++found;
+            char b[64]; snprintf(b, sizeof b, found ? "%d MATCHING PRESET%s" : "NO PRESET MATCHES", found, found == 1 ? "" : "S"); fillColor(C_ACC); text(mx + PM_PAD + 12, hy, b, nullptr);
         }
-        if (userPresets.empty()) { fontSize(10); textLetterSpacing(0.4f); fillColor(C_FAINT); text(mx + PM_PAD + kNumCategories * PM_COLW + 12, my + PM_PAD + PM_ROW + 6 + PM_HEAD + PM_ROW / 2, "(none saved yet)", nullptr); }
         for (int i = 0; i < (int)items.size(); ++i) {
             const MRect& r = items[i]; const bool hot = i == menuHover;
             if (r.kind == 2) {
@@ -658,19 +739,43 @@ protected:
                 fontSize(9.5f); textLetterSpacing(1.6f); textAlign(ALIGN_CENTER | ALIGN_MIDDLE); fillColor(C_TEXT); text(r.x + r.w / 2, r.y + r.h / 2 + 0.5f, "SAVE CURRENT AS...", nullptr);
                 continue;
             }
-            const bool isCur = r.kind == 0 ? (curUser.empty() && r.idx == curFactory) : (curUser == userPresets[r.idx]);
+            if (r.kind == 3) {             // search field
+                beginPath(); roundedRect(r.x, r.y + 1, r.w, r.h - 2, 4); fillColor(C_DISPLAY); fill(); strokeColor(query.empty() ? C_LINE : C_ACC); strokeWidth(1); stroke();
+                beginPath(); circle(r.x + 12, r.y + r.h / 2, 4); moveTo(r.x + 15, r.y + r.h / 2 + 3); lineTo(r.x + 18, r.y + r.h / 2 + 6); strokeColor(C_DIM); strokeWidth(1.3f); stroke();
+                fontSize(11); textLetterSpacing(0.3f); textAlign(ALIGN_LEFT | ALIGN_MIDDLE); fillColor(query.empty() ? C_FAINT : C_TEXT);
+                text(r.x + 26, r.y + r.h / 2 + 0.5f, query.empty() ? "Type to search names and categories" : (query + "|").c_str(), nullptr);
+                continue;
+            }
+            const std::string key = favKey(r.kind, r.idx);
+            const bool isCur = r.kind == 0 ? (curUser.empty() && r.idx == curFactory) : (r.kind == 1 ? curUser == userPresets[r.idx] : false);
             const bool del = r.kind == 1 && pendingDelete == r.idx;
             if (hot || del) { beginPath(); roundedRect(r.x, r.y, r.w, r.h, 4); fillColor(del ? Color(0xd0, 0x50, 0x40, 0.35f) : withAlpha(C_ACC, 0.18f)); fill(); }
             if (isCur) { beginPath(); circle(r.x + 6, r.y + r.h / 2, 2.5f); fillColor(C_ACC); fill(); }
             fontSize(11); textLetterSpacing(0.3f); textAlign(ALIGN_LEFT | ALIGN_MIDDLE); fillColor(hot || isCur || del ? C_TEXT : C_DIM);
-            const std::string label = del ? "Delete? click again" : (r.kind == 0 ? std::string(presets()[r.idx].name) : userPresets[r.idx]);
+            const std::string label = del ? "Delete? click again" : itemLabel(r);
             text(r.x + 12, r.y + r.h / 2 + 0.5f, label.c_str(), nullptr);
+            // the favourite star
+            const bool fav = isFav(key);
+            if (fav || hot) drawStar(r.x + r.w - 10, r.y + r.h / 2, 5.f, fav);
         }
+    }
+    void drawStar(float cx, float cy, float rr, bool filled) {
+        beginPath();
+        for (int k = 0; k < 10; ++k) { const float a = -kPi / 2 + k * kPi / 5, q = k % 2 ? rr * 0.45f : rr; if (!k) moveTo(cx + q * std::cos(a), cy + q * std::sin(a)); else lineTo(cx + q * std::cos(a), cy + q * std::sin(a)); }
+        closePath();
+        if (filled) { fillColor(C_DECAY); fill(); } else { strokeColor(C_DIM); strokeWidth(1); stroke(); }
     }
     int menuHit(float x, float y) const { float mx, my, mw, mh; std::vector<MRect> it; menuLayout(mx, my, mw, mh, it);
         for (int i = 0; i < (int)it.size(); ++i) if (x >= it[i].x && x < it[i].x + it[i].w && y >= it[i].y && y < it[i].y + it[i].h) return i;
         return -1; }
     MRect menuItem(int i) const { float mx, my, mw, mh; std::vector<MRect> it; menuLayout(mx, my, mw, mh, it); return it[i]; }
+    void openMenu() { userPresets = listUserPresets(); favs = loadFavourites(); query.clear(); menuOpen = true; menuHover = -1; pendingDelete = -1; repaint(); }
+    void applyFavourite(int idx) {
+        if (idx >= (int)favs.size()) return;
+        const std::string& k = favs[idx];
+        if (k.compare(0, 2, "f:") == 0) { for (uint32_t i = 0; i < kNumPresets; ++i) if (k.substr(2) == presets()[i].name) { applyFactory((int)i); return; } }
+        else applyUser(k.substr(2));
+    }
     void drawSaveBox() {
         const float w = 360, h = 96, x = W / 2 - w / 2, y = 130;
         beginPath(); rect(0, 0, W, H); fillColor(Color(0, 0, 0, 0.45f)); fill();
@@ -682,9 +787,26 @@ protected:
         text(x + w - 16, y + 72, saveError ? "COULD NOT SAVE - CHECK THE NAME" : "ENTER TO SAVE   ·   ESC TO CANCEL", nullptr);
     }
 
+    // ---- impulse response import ---------------------------------------------------------------
+    void uiFileBrowserSelected(const char* filename) override {
+        if (!filename || !*filename) return;
+        irPath = filename; irBusy = true; irShown = false; statusText = "Analysing the impulse response..."; statusFlash = 200; repaint();
+    }
+    void runIrImport() {
+        WavData w; std::string err;
+        if (!readWav(irPath.c_str(), w, err)) { irBusy = false; flashLong(std::string("Could not import: ") + err); return; }
+        float p[kParamCount]; std::copy(val, val + kParamCount, p); IrReport rep;
+        if (!matchIr(w, p, rep)) { irBusy = false; flashLong(std::string("Could not import: ") + rep.message); return; }
+        beginGesture(); applyAll(p); endGesture(); focus = -1; layer = 0; irBusy = false;
+        curFactory = -1; curUser.clear();
+        flashLong(rep.message);
+    }
+    void flashLong(const std::string& s) { statusText = s; statusFlash = 240; repaint(); }
+
     // ---- analyser + tips (idle) ---------------------------------------------------------------
     void uiIdle() override {
         const double t = nowSec();
+        if (irBusy && !irPath.empty() && irShown) { runIrImport(); irPath.clear(); }
         if (t - lastAna > 0.033) {
             lastAna = t;
             if (GeodePlugin* const dsp = (GeodePlugin*)getPluginInstancePointer()) {
@@ -725,7 +847,7 @@ protected:
         }
         int t = -1;
         if (tipKey >= 5000) t = kTipDisplay;
-        else if (tipKey >= 4000) t = tipKey - 4000 == 1 ? kTipLayerDecay : (tipKey - 4000 == 2 ? kTipLayerPost : kTipAnalyzer);
+        else if (tipKey >= 4000) { const int k = tipKey - 4000; t = k == 1 ? kTipLayerDecay : (k == 2 ? kTipLayerPost : (k == 3 ? kTipAnalyzer : (k == 4 ? kTipPiano : kTipImport))); }
         else if (tipKey >= 3000) t = kTipDot;
         else if (tipKey >= 2000) t = kTipPrev + (tipKey - 2000);
         else if (tipKey == 1100) t = kTipMeters;
@@ -822,8 +944,9 @@ protected:
             if (!visible(c)) continue;
             switch (c.type) {
             case Knob: { const float rr = c.r + 6; if ((x - c.x) * (x - c.x) + (y - c.y) * (y - c.y) <= rr * rr) return i; break; }
-            case Toggle: if (x >= c.x - 20 && x <= c.x + (c.role == ROn ? 150 : 70) && std::fabs(y - c.y) <= 12) return i; break;
+            case Toggle: if (x >= c.x - 20 && x <= c.x + (c.role == ROn ? 150 : (c.param == kAutoGate ? 110 : 70)) && std::fabs(y - c.y) <= 12) return i; break;
             case DelButton: if (std::fabs(x - c.x) <= 14 && std::fabs(y - c.y) <= 12) return i; break;
+            case Button: if (std::fabs(x - c.x) <= c.r / 2 && std::fabs(y - c.y) <= 13) return i; break;
             case Segment: { int n = 0; segNames(c, n); const float x0 = c.x - c.r / 2;
                 if (x >= x0 && x < x0 + c.r && std::fabs(y - c.y) <= SEG_H / 2 + 1) { if (seg) *seg = (int)((x - x0) / (c.r / n)); return i; } break; }
             }
@@ -893,6 +1016,13 @@ protected:
     bool onKeyboard(const KeyboardEvent& ev) override {
         if (!ev.press) return false;
         std::string* b2 = saving ? &saveName : (editing >= 0 ? &editBuf : nullptr);
+        if (!b2 && menuOpen) {                               // typing in the preset browser searches
+            if (ev.key == kKeyEscape) { if (!query.empty()) query.clear(); else menuOpen = false; }
+            else if (ev.key == kKeyBackspace || ev.key == kKeyDelete) { if (!query.empty()) query.pop_back(); }
+            else if (ev.key >= 32 && ev.key < 127 && query.size() < 32) query += (char)ev.key;
+            else return false;
+            menuHover = -1; pendingDelete = -1; repaint(); return true;
+        }
         if (!b2) {
             const bool cmd = (ev.mod & (kModifierControl | kModifierSuper)) != 0;
             if (cmd && (ev.key == 'z' || ev.key == 'Z')) { if (ev.mod & kModifierShift) redo(); else undo(); return true; }
@@ -937,9 +1067,11 @@ protected:
             const int m = menuHit(x, y);
             if (m >= 0) {
                 const MRect r = menuItem(m);
+                if (r.kind == 3) return true;                       // the search field: just type
+                if ((r.kind == 0 || r.kind == 1 || r.kind == 4) && x >= r.x + r.w - 20) { toggleFav(favKey(r.kind, r.idx)); return true; }
                 if (r.kind == 2) { menuOpen = false; saving = true; saveError = false; saveName = curUser; }
                 else if (r.kind == 1 && pendingDelete == r.idx) { deleteUserPreset(userPresets[r.idx]); if (curUser == userPresets[r.idx]) curUser.clear(); userPresets = listUserPresets(); pendingDelete = -1; repaint(); return true; }
-                else { menuOpen = false; if (r.kind == 0) applyFactory(r.idx); else applyUser(userPresets[r.idx]); }
+                else { menuOpen = false; if (r.kind == 0) applyFactory(r.idx); else if (r.kind == 1) applyUser(userPresets[r.idx]); else applyFavourite(r.idx); }
             } else menuOpen = false;
             pendingDelete = -1; menuHover = -1; repaint(); return true;
         }
@@ -954,11 +1086,13 @@ protected:
         const int pb = presetBarHit(x, y);
         if (pb == 0) { step(-1); return true; }
         if (pb == 2) { step(1); return true; }
-        if (pb == 1) { userPresets = listUserPresets(); menuOpen = true; menuHover = -1; pendingDelete = -1; repaint(); return true; }
+        if (pb == 1) { openMenu(); return true; }
         if (clearHit(x, y)) { setState("cmd", "clear"); for (int& m : paramCC) m = -1; repaint(); return true; }
         const int ph = pillHit(x, y);
         if (ph == 1 || ph == 2) { layer = ph - 1; if (focus >= 0 && isPost(focus) != (layer == 1)) focus = -1; repaint(); return true; }
         if (ph == 3) { commit(kAnalyzer, val[kAnalyzer] > 0.5f ? 0.f : 1.f); return true; }
+        if (ph == 4) { commit(kPiano, val[kPiano] > 0.5f ? 0.f : 1.f); return true; }
+        if (ph == 5) { FileBrowserOptions o; o.title = "Import an impulse response (WAV)"; if (!openFileBrowser(o)) flash("Could not open a file browser here"); return true; }
 
         int seg = 0; const int i = hit(x, y, &seg);
         if (i >= 0) {
@@ -967,7 +1101,7 @@ protected:
             if (p >= kParamCount) return true;
             if (learnMode) { learnWaiting = (int)p; char b[24]; snprintf(b, sizeof b, "learn:%u", p); setState("cmd", b); repaint(); return true; }
             if (isView(p)) { if (c.type == Toggle) commit(p, val[p] > 0.5f ? 0.f : 1.f); return true; }
-            if (c.type == Toggle) { beginGesture(); commit(p, val[p] > 0.5f ? 0.f : 1.f); endGesture(); return true; }
+            if (c.type == Toggle || c.type == Button) { beginGesture(); commit(p, val[p] > 0.5f ? 0.f : 1.f); endGesture(); return true; }
             if (c.type == Segment) { if (dimmed(c) && c.role == RSlope) return true; beginGesture(); commit(p, (float)seg); endGesture(); return true; }
             if (ev.mod & (kModifierControl | kModifierSuper)) { beginGesture(); commit(p, defaultFor(p)); endGesture(); return true; }
             if (i == lastClick && ev.time - lastClickTime < 350) {
@@ -1088,6 +1222,8 @@ private:
     bool learnMode = false, hoverClear = false; int learnWaiting = -1; float lastLearnEcho = 0;
     int tipKey = -1, tipSuppressed = -2; double tipSince = 0; bool tipShown = false; float tipX = 0, tipY = 0;
     bool helpOpen = false; int helpPage = 0, helpHover = -1;
+    std::string irPath; bool irBusy = false, irShown = false;
+    std::string query; std::vector<std::string> favs;
     ResizeHandle resizeHandle;
 
     DISTRHO_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(GeodeUI)

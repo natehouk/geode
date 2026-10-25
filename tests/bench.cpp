@@ -4,9 +4,11 @@
 #include <cstdio>
 using namespace geode;
 int main() {
-    for (int cfg = 0; cfg < 3; ++cfg) {
+    for (int cfg = 0; cfg < 5; ++cfg) {
         Engine e; e.setSampleRate(48000); e.p[kMix] = 50;
         if (cfg >= 1) for (int b = 0; b < kDecayBands; ++b) { e.p[dp(b, kDUsed)] = 1; e.p[dp(b, kDFreq)] = 200.f * (b + 1); e.p[dp(b, kDAmount)] = 0.3f; e.p[pp(b, kPUsed)] = 1; e.p[pp(b, kPFreq)] = 300.f * (b + 1); e.p[pp(b, kPGain)] = 2; }
+        if (cfg == 3) { e.p[kAlgorithm] = kVintage; e.p[kThickness] = 60; e.p[kDucking] = 50; e.p[kAutoGate] = 1; }
+        if (cfg == 4) { e.p[kAlgorithm] = kPlate; for (int b = 0; b < kPostBands; ++b) { e.p[pp(b, kPUsed)] = 1; e.p[pp(b, kPFreq)] = 300.f * (b + 1); e.p[pp(b, kPGain)] = 2; e.p[placeParam(b)] = (float)(b % kNumPlaces); } }
         e.reset();
         const int n = 512, secs = 20; std::vector<float> l(n), r(n), ol(n), orr(n);
         for (int i = 0; i < n; ++i) { l[i] = std::sin(i * 0.03f) * 0.3f; r[i] = std::cos(i * 0.017f) * 0.3f; }
@@ -16,6 +18,8 @@ int main() {
             e.process(l.data(), r.data(), ol.data(), orr.data(), n);
         }
         const double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        printf("%s: %.2f%% of one core\n", cfg == 0 ? "default            " : (cfg == 1 ? "all 12 EQ bands    " : "SPACE being turned "), 100 * el / secs);
+        static const char* const names[] = { "default                         ", "all 12 EQ bands                 ", "SPACE being turned              ",
+                                             "Vintage + thickness, duck, gate ", "Plate + 6 post bands, M/S/L/R   " };
+        printf("%s: %.2f%% of one core\n", names[cfg], 100 * el / secs);
     }
 }

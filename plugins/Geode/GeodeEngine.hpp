@@ -2,7 +2,10 @@
 // Signal path: predelay (with air absorption for distance) -> early reflections + input diffusion ->
 // 16-line feedback delay network (Hadamard mixing, modulated cubic reads) whose per-line loss filters realise a
 // frequency-dependent decay time (the space's natural damping, brightness and the 6-band decay rate EQ) ->
-// stereo width -> tone -> 6-band post EQ -> dry/wet mix.
+// stereo width -> tone -> thickness -> 6-band post EQ (stereo, mid, side, left or right per band) -> ducking and
+// auto gate -> dry/wet mix. Three algorithms share the network: Modern (1.x), Vintage (band-limited, grainier,
+// slower and deeper modulation, short word length) and Plate (short dense lines, no early reflections, bright).
+// Freeze makes the network lossless and stops new input.
 // Clean-room implementation from public, generic techniques (Jot/Chaigne FDN with absorptive loss filters,
 // Schroeder allpass diffusion, RBJ biquads, Zavalishin/Simper trapezoidal SVF). No third-party product code,
 // assets or disassembly were used. License: MIT (see LICENSE).
@@ -34,8 +37,22 @@ enum Param : uint32_t {
     kPostFirst,
     kPostLast = kPostFirst + kPostBands * kPFields - 1,
     kOutLearn, kOutInL, kOutInR, kOutOutL, kOutOutR,
+    // ---- 2.0
+    kAlgorithm,      // Modern, Vintage, Plate
+    kThickness,      // %, saturation + compression of the reverb
+    kDucking,        // %, the reverb steps back while the dry signal plays
+    kAutoGate,       // gate the reverb when the input stops
+    kGateThreshold,  // dB
+    kGateHold,       // ms
+    kFreeze,         // hold the current reverb indefinitely
+    kPostPlaceFirst, // per post-EQ band: Stereo, Mid, Side, Left, Right
+    kPostPlaceLast = kPostPlaceFirst + kPostBands - 1,
+    kPiano,          // display: piano-key frequency scale (view)
     kParamCount
 };
+enum Algorithm { kModern, kVintage, kPlate, kNumAlgorithms };
+enum Place { kStereo, kMid, kSide, kLeftOnly, kRightOnly, kNumPlaces };
+inline uint32_t placeParam(int b) { return kPostPlaceFirst + b; }
 inline uint32_t dp(int b, int f) { return kDecayFirst + b * kDFields + f; }
 inline uint32_t pp(int b, int f) { return kPostFirst + b * kPFields + f; }
 enum DShape { kDBell, kDLowShelf, kDHighShelf, kDNotch, kNumDShapes };
@@ -127,6 +144,7 @@ inline DecayShape decayShape(const float* p, const SpaceParams& sp, float bright
     return s;
 }
 static constexpr float kMaxDecayS = 40.f;
+inline int algOf(const float* p) { return (int)clampf(std::round(p[kAlgorithm]), 0, kNumAlgorithms - 1); }
 struct LineFilter { BQ bq[10]; int n = 0; float g = 1; };
 // The bands' decay changes multiply (they add in octaves of decay time), but the loss filters' dB gains add.
 // So the band gains are solved for on a reference line: a few correction passes match the realised loss at each band's
@@ -174,12 +192,16 @@ inline float decayCorrection(const DecaySolution& r, float fs) {
     for (int k = 0; k < 40; ++k) { const float hz = 20.f * std::pow(0.45f * fs / 20.f, k / 39.f); worst = std::max(worst, lineDb(lf, fs, hz)); }
     return worst > allowed ? (allowed - worst) / r.dRef : 0.f;
 }
-inline float decayTime(const float* p) { return spaceAt(p[kSpace]).decayS * clampf(p[kDecayRate], 50.f, 200.f) / 100.f; }
+static constexpr float kDecayMin = 25.f, kDecayMax = 400.f;
+inline float decayTime(const float* p) { return spaceAt(p[kSpace]).decayS * clampf(p[kDecayRate], kDecayMin, kDecayMax) / 100.f; }
+// algorithm adjustments to the space's natural damping (octaves of decay time above 4 kHz)
+inline float algoHf(int alg, float hf) { return alg == kVintage ? hf - 0.6f : (alg == kPlate ? hf * 0.4f : hf); }
 // the realised decay time (RT60, seconds) at hz, for the display
 struct DecayCurve {
     LineFilter lf; float d = 1, fs = 48000;
     void build(const float* p, float sr) {
-        fs = sr; const SpaceParams sp = spaceAt(p[kSpace]); const float T0 = decayTime(p);
+        fs = sr; SpaceParams sp = spaceAt(p[kSpace]); const float T0 = decayTime(p);
+        sp.hf = algoHf(algOf(p), sp.hf);
         d = sp.sizeMs * 0.001f * fs * 0.65f;
         const DecaySolution r = solveDecay(decayShape(p, sp, clampf(p[kBrightness] / 100.f, 0.f, 1.f)), T0, fs, d);
         designLine(r, fs, d, lf, decayCorrection(r, fs));
@@ -208,8 +230,8 @@ inline cpx postResponse(int shape, int slope, float fc, float gainDb, float q, f
     }
 }
 struct PostBand {
-    bool used = false, on = false; int shape = kPBell, slope = 1;
-    int curShape = kPBell, curSlope = 1; bool swapping = false; int hold = 0;
+    bool used = false, on = false; int shape = kPBell, slope = 1, place = kStereo;
+    int curShape = kPBell, curSlope = 1, curPlace = kStereo; bool swapping = false; int hold = 0;
     float oct = 10, gain = 0, lq = 0, mix = 0, m = 0, dm = 0;
     int nst = 1; bool onePole = false;
     float a1[8] = {}, a2[8] = {}, a3[8] = {}, m0[8] = {}, m1[8] = {}, m2[8] = {}, G = 0;
@@ -267,17 +289,24 @@ public:
         for (int b = 0; b < kDecayBands; ++b) defaultDecayBand(b, 1000.f);
         for (int b = 0; b < kPostBands; ++b) defaultPostBand(b, 1000.f);
         p[kOutInL] = p[kOutInR] = p[kOutOutL] = p[kOutOutR] = -120;
+        p[kAlgorithm] = kModern; p[kThickness] = 0; p[kDucking] = 0; p[kAutoGate] = 0; p[kGateThreshold] = -40; p[kGateHold] = 150; p[kFreeze] = 0;
+        for (int b = 0; b < kPostBands; ++b) p[placeParam(b)] = kStereo;
+        p[kPiano] = 0;
         std::fill(ana, ana + kAnaSize, 0.f);
         setSampleRate(48000.f);
     }
     void defaultDecayBand(int b, float hz) { p[dp(b, kDUsed)] = 0; p[dp(b, kDOn)] = 1; p[dp(b, kDShape)] = kDBell; p[dp(b, kDFreq)] = hz; p[dp(b, kDAmount)] = 0; p[dp(b, kDQ)] = 1; }
-    void defaultPostBand(int b, float hz) { p[pp(b, kPUsed)] = 0; p[pp(b, kPOn)] = 1; p[pp(b, kPShape)] = kPBell; p[pp(b, kPFreq)] = hz; p[pp(b, kPGain)] = 0; p[pp(b, kPQ)] = 1; p[pp(b, kPSlope)] = 2; }
+    void defaultPostBand(int b, float hz) { p[pp(b, kPUsed)] = 0; p[pp(b, kPOn)] = 1; p[pp(b, kPShape)] = kPBell; p[pp(b, kPFreq)] = hz; p[pp(b, kPGain)] = 0; p[pp(b, kPQ)] = 1; p[pp(b, kPSlope)] = 2; p[placeParam(b)] = kStereo; }
 
     void setSampleRate(float sr) {
         fs = std::max(8000.f, sr);
         preLen = pow2((int)(0.75f * fs)); for (auto& v : pre) v.assign(preLen, 0.f);
         lineLen = pow2((int)(0.175f * fs)); for (auto& v : line) v.assign(lineLen, 0.f);
         apLen = pow2((int)(0.02f * fs)); for (auto& c : ap) for (auto& v : c) v.assign(apLen, 0.f);
+        vinK = 1.f - std::exp(-2.f * kPi * std::min(8000.f, 0.4f * fs) / fs);
+        thAtk = 1.f - std::exp(-1.f / (0.004f * fs)); thRelK = 1.f - std::exp(-1.f / (0.08f * fs)); thAvgK = 1.f - std::exp(-1.f / (0.6f * fs));
+        duckAtk = 1.f - std::exp(-1.f / (0.005f * fs)); duckRel = std::exp(-1.f / (0.15f * fs));
+        gateRel = std::exp(-1.f / (0.03f * fs)); gateAtk = 1.f - std::exp(-1.f / (0.002f * fs)); gateRelK = 1.f - std::exp(-1.f / (0.02f * fs));
         reset();
     }
     void setTempo(double bpm) { tempo = bpm > 1 ? (float)bpm : 120.f; }
@@ -287,16 +316,20 @@ public:
         for (auto& c : ap) for (auto& v : c) std::fill(v.begin(), v.end(), 0.f);
         prePos = linePos = apPos = 0; air[0] = air[1] = 0; toneZ[0][0] = toneZ[0][1] = toneZ[1][0] = toneZ[1][1] = 0;
         std::memset(fz, 0, sizeof fz);
-        snapTargets(); sm = tg; designAll(); lastDesign = sm;
+        snapTargets(); sm = tg; alg = (int)sm.alg; designAll(); lastDesign = sm;
         pdT = pdS = sm.pd * 0.001f * fs;
         std::copy(dS, dS + kLines, dCur); std::memcpy(erS, erT, sizeof erS); lateS = lateT;
         gDry = tDry = std::cos(sm.mix * kPi * 0.5f); gWet = tWet = std::sin(sm.mix * kPi * 0.5f); gOut = tOut = dbToGain(sm.out);
-        for (int b = 0; b < kPostBands; ++b) { PostBand& d = post[b]; d.reset(); syncPost(b); d.curShape = d.shape; d.curSlope = d.slope;
+        for (int b = 0; b < kPostBands; ++b) { PostBand& d = post[b]; d.reset(); syncPost(b); d.curShape = d.shape; d.curSlope = d.slope; d.curPlace = d.place;
             d.oct = std::log2(clampf(p[pp(b, kPFreq)], 10.f, 30000.f)); d.gain = p[pp(b, kPGain)]; d.lq = std::log2(clampf(p[pp(b, kPQ)], 0.025f, 40.f));
             d.mix = d.m = (d.used && d.on) ? 1.f : 0.f; d.dm = 0; d.design(fs); }
         for (int i = 0; i < kLines; ++i) lfo[i] = 0.37f * i;
         ctl = 0; mIn[0] = mIn[1] = mOut[0] = mOut[1] = 0;
+        std::memset(vin, 0, sizeof vin); thEnv = 0; thIn = thOut = 0; duckEnv = gateEnv = 0; duckG = duckT = 1; dDuck = 0; gateG = 1; gateOpen = true; gateHoldLeft = 0;
+        frz = frzT = sm.frz; dFrz = 0;
     }
+    bool frozen() const { return frz > 0.5f; }
+    float gateGain() const { return gateG; }
     float erTrim = 1, lateTrim = 1;     // test hooks: scale the early and late parts
     uint32_t latency() const { return 0; }
     float sampleRate() const { return fs; }
@@ -328,7 +361,13 @@ public:
             mIn[0] = std::max(mIn[0] * meterFall, std::fabs(dl)); mIn[1] = std::max(mIn[1] * meterFall, std::fabs(dr));
             // air absorption (distance), into the predelay line
             air[0] += (dl - air[0]) * airK; air[1] += (dr - air[1]) * airK;
+            if (alg == kVintage) {                          // a band-limited, older converter: three poles at about 8 kHz
+                float a[2] = { air[0], air[1] };
+                for (int c = 0; c < 2; ++c) { vin[c][0] += (a[c] - vin[c][0]) * vinK; vin[c][1] += (vin[c][0] - vin[c][1]) * vinK; vin[c][2] += (vin[c][1] - vin[c][2]) * vinK; }
+                pre[0][prePos] = std::isfinite(vin[0][2]) ? vin[0][2] : 0.f; pre[1][prePos] = std::isfinite(vin[1][2]) ? vin[1][2] : 0.f;
+            } else {
             pre[0][prePos] = std::isfinite(air[0]) ? air[0] : 0.f; pre[1][prePos] = std::isfinite(air[1]) ? air[1] : 0.f;
+            }
             pdS += (pdT - pdS) * pdSmooth;
             // early reflections (tap times glide, so a changing space never jumps)
             float er[2] = { 0, 0 };
@@ -340,6 +379,10 @@ public:
             // late input: delayed, then diffused
             lateS += (lateT - lateS) * kGlide;
             float x[2] = { readPre(0, pdS + lateS), readPre(1, pdS + lateS) };
+            if (frz > 0.f || dFrz != 0.f) {                 // freeze: no new sound enters
+                frz = clampf(frz + dFrz, 0.f, 1.f);
+                for (int c = 0; c < 2; ++c) { x[c] *= 1.f - frz; er[c] *= 1.f - frz; }
+            }
             for (int c = 0; c < 2; ++c) {
                 x[c] += er[c] * 0.35f;
                 for (int a = 0; a < kAp; ++a) {
@@ -355,6 +398,7 @@ public:
                 const float tri = 4.f * std::fabs(lfo[l] - 0.5f) - 1.f;           // triangle, smooth enough at these rates
                 dCur[l] += (dS[l] - dCur[l]) * kGlide;
                 float y = readLine(l, dCur[l] + modDepth * modScale[l] * tri);
+                const float raw = y;
                 LineFilter& lf = lflt[l];
                 y *= lf.g;
                 for (int k = 0; k < lf.n; ++k) {                                    // transposed direct form II
@@ -362,6 +406,7 @@ public:
                     if (q.identity) { z[0] = z[1] = 0.f; continue; }
                     const float o = q.b0 * y + z[0]; z[0] = q.b1 * y - q.a1 * o + z[1]; z[1] = q.b2 * y - q.a2 * o; y = o;
                 }
+                if (frz > 0.f) y += (raw - y) * frz;               // frozen: lossless (the mixing matrix is orthonormal)
                 f[l] = y;
             }
             float wl = 0, wr = 0;
@@ -379,12 +424,28 @@ public:
             for (int c = 0; c < 2; ++c) {
                 const float o = tone.b0 * wet[c] + toneZ[c][0]; toneZ[c][0] = tone.b1 * wet[c] - tone.a1 * o + toneZ[c][1]; toneZ[c][1] = tone.b2 * wet[c] - tone.a2 * o; wet[c] = o;
             }
+            if (alg == kVintage) for (int c = 0; c < 2; ++c) wet[c] = std::round(wet[c] * 8192.f) * (1.f / 8192.f);     // 14-bit word length
+            if (thick > 0.f) thicken(wet);
             for (PostBand& bd : post) {
                 if (!bd.used) continue;
                 bd.m += bd.dm;
-                for (int c = 0; c < 2; ++c) { const float y = bd.tick(wet[c], c); if (bd.m > 0.f) wet[c] += (y - wet[c]) * bd.m; }
+                if (bd.curPlace == kStereo) { for (int c = 0; c < 2; ++c) { const float y = bd.tick(wet[c], c); if (bd.m > 0.f) wet[c] += (y - wet[c]) * bd.m; } }
+                else if (bd.curPlace == kLeftOnly || bd.curPlace == kRightOnly) { const int c = bd.curPlace == kLeftOnly ? 0 : 1; const float y = bd.tick(wet[c], 0); if (bd.m > 0.f) wet[c] += (y - wet[c]) * bd.m; }
+                else {
+                    float ms[2] = { 0.5f * (wet[0] + wet[1]), 0.5f * (wet[0] - wet[1]) }; const int k = bd.curPlace == kMid ? 0 : 1;
+                    const float y = bd.tick(ms[k], 0); if (bd.m > 0.f) ms[k] += (y - ms[k]) * bd.m;
+                    wet[0] = ms[0] + ms[1]; wet[1] = ms[0] - ms[1];
+                }
             }
             ana[w & (kAnaSize - 1)] = 0.5f * (wet[0] + wet[1]); ++w;
+            if (duckOn || gateOn) {                         // ducking and the auto gate follow the dry input
+                const float a = std::max(std::fabs(dl), std::fabs(dr));
+                duckEnv = a > duckEnv ? duckEnv + (a - duckEnv) * duckAtk : duckEnv * duckRel;
+                gateEnv = a > gateEnv ? a : gateEnv * gateRel;
+                duckG += dDuck;
+                gateG += ((gateOpen ? 1.f : 0.f) - gateG) * (gateOpen ? gateAtk : gateRelK);
+                const float g = duckG * gateG; wet[0] *= g; wet[1] *= g;
+            }
             gDry += (tDry - gDry) * 0.002f; gWet += (tWet - gWet) * 0.002f; gOut += (tOut - gOut) * 0.002f;
             float yl = (dl * gDry + wet[0] * gWet) * gOut, yr = (dr * gDry + wet[1] * gWet) * gOut;
             if (!(std::fabs(yl) < 64.f)) yl = std::isfinite(yl) ? std::copysign(64.f, yl) : 0.f;
@@ -417,12 +478,12 @@ private:
     static int pow2(int n) { int k = 1; while (k < n) k <<= 1; return k; }
     // smoothed control state
     struct CtlState {
-        float space, decay, bright, chr, dist, width, mix, out, pd;
+        float space, decay, bright, chr, dist, width, mix, out, pd, alg, frz;
         float dec[kDecayBands * kDFields], effL[kDecayBands];
         bool operator==(const CtlState& o) const { return std::memcmp(this, &o, sizeof(CtlState)) == 0; }
     } tg, sm, lastDesign;
     void snapTargets() {
-        tg.space = clampf(p[kSpace], 0.f, 1.f); tg.decay = clampf(p[kDecayRate], 50.f, 200.f); tg.bright = clampf(p[kBrightness], 0.f, 100.f) / 100.f;
+        tg.space = clampf(p[kSpace], 0.f, 1.f); tg.decay = clampf(p[kDecayRate], kDecayMin, kDecayMax); tg.alg = (float)algOf(p); tg.frz = p[kFreeze] > 0.5f ? 1.f : 0.f; tg.bright = clampf(p[kBrightness], 0.f, 100.f) / 100.f;
         tg.chr = clampf(p[kCharacter], 0.f, 100.f) / 100.f; tg.dist = clampf(p[kDistance], 0.f, 100.f) / 100.f; tg.width = clampf(p[kWidth], 0.f, 120.f) / 100.f;
         tg.mix = clampf(p[kMix], 0.f, 100.f) / 100.f; tg.out = clampf(p[kOutput], -36.f, 12.f); tg.pd = predelayMs();
         for (int i = 0; i < kDecayBands * kDFields; ++i) tg.dec[i] = p[kDecayFirst + i];
@@ -434,6 +495,26 @@ private:
         auto go = [](float& s, float t, float k) { s += (t - s) * k; if (std::fabs(t - s) < 1e-5f * (1.f + std::fabs(t))) s = t; };
         go(sm.space, tg.space, kSlow); go(sm.decay, tg.decay, kFast); go(sm.bright, tg.bright, kFast); go(sm.chr, tg.chr, kFast);
         go(sm.dist, tg.dist, kFast); go(sm.width, tg.width, kFast); go(sm.mix, tg.mix, kFast); go(sm.out, tg.out, kFast); sm.pd = tg.pd;
+        sm.alg = tg.alg; sm.frz = tg.frz; alg = (int)sm.alg;
+        // freeze ramps over about 60 ms; thickness, ducking and the gate follow their controls
+        frzT = sm.frz; dFrz = std::fabs(frzT - frz) < 1e-6f ? 0.f : (frzT > frz ? 1.f : -1.f) * kCtl / (0.06f * fs);
+        if (dFrz == 0.f) frz = frzT;
+        thick = clampf(p[kThickness], 0.f, 100.f) / 100.f;
+        if (thick > 0.f) { thRatio = 1.f + 5.f * thick; thDrive = 1.f + 2.5f * thick; }
+        const float duck = clampf(p[kDucking], 0.f, 100.f) / 100.f;
+        duckOn = duck > 0.f; gateOn = p[kAutoGate] > 0.5f;
+        if (duckOn) {
+            const float envDb = 20.f * std::log10(std::max(duckEnv, 1e-6f));
+            duckT = dbToGain(-30.f * duck * clampf((envDb + 30.f) / 30.f, 0.f, 1.f));
+        } else duckT = 1.f;
+        if (!duckOn && !gateOn) { duckG = 1.f; dDuck = 0.f; gateG = 1.f; }
+        else dDuck = (duckT - duckG) / kCtl;
+        if (gateOn) {
+            const float thr = dbToGain(clampf(p[kGateThreshold], -80.f, 0.f));
+            if (gateEnv > thr) { gateOpen = true; gateHoldLeft = clampf(p[kGateHold], 0.f, 2000.f) * 0.001f * fs; }
+            else if (gateHoldLeft > 0) gateHoldLeft -= kCtl;
+            else gateOpen = false;
+        } else gateOpen = true;
         for (int b = 0; b < kDecayBands; ++b)
             for (int f = 0; f < kDFields; ++f) {
                 float& s = sm.dec[b * kDFields + f]; const float t = tg.dec[b * kDFields + f];
@@ -450,9 +531,12 @@ private:
     void designAll() {
         float pv[kParamCount]; std::copy(p, p + kParamCount, pv);
         for (int i = 0; i < kDecayBands * kDFields; ++i) pv[kDecayFirst + i] = sm.dec[i];
-        const SpaceParams sp = spaceAt(sm.space);
+        SpaceParams sp = spaceAt(sm.space);
+        const int a = (int)sm.alg;
+        sp.hf = algoHf(a, sp.hf);
         const float T0 = sp.decayS * sm.decay / 100.f;
-        const float size = sp.sizeMs * 0.001f * fs;
+        // a plate is a small, dense resonator whatever the decay: its lines are short
+        const float size = (a == kPlate ? std::max(9.f, sp.sizeMs * 0.42f) : sp.sizeMs) * 0.001f * fs;
         float dSum = 0;
         for (int l = 0; l < kLines; ++l) { dS[l] = std::min(size * kRatio[l], (float)lineLen - 8.f - 0.006f * fs); dSum += dS[l]; }
         const DecaySolution r = solveDecay(decayShape(pv, sp, sm.bright, sm.effL), T0, fs, dS[kLongest]);
@@ -467,7 +551,9 @@ private:
         const float er = std::max(0.f, 1.1f - 0.75f * sm.dist) * (1.f + 1.2f * std::min(1.f, c * 2.f));
         erGain = erTrim * 0.18f * er * (1.f - 0.3f * sm.space);
         modDepth = (0.08f + 12.f * std::max(0.f, c - 0.5f) * std::max(0.f, c - 0.5f)) * 0.001f * fs;
-        const float rate = 0.25f + 1.1f * c;
+        float rate = 0.25f + 1.1f * c;
+        if (a == kVintage) { diffG *= 0.8f; modDepth += 0.45f * 0.001f * fs; rate *= 0.55f; }        // grainier, slower and deeper chorus
+        if (a == kPlate) { diffG = 0.75f; erGain = 0.f; modDepth *= 0.5f; }                        // dense from the start, no room reflections
         for (int l = 0; l < kLines; ++l) { lfoInc[l] = rate * (0.62f + 0.06f * l) / fs; modScale[l] = 0.5f + 0.5f * (float)((l * 7) % kLines) / (kLines - 1); }
         // early reflection pattern, stretched to this space and pushed back by distance
         const float erLen = sp.erMs * (1.f + 0.6f * sm.dist) * 0.001f * fs;
@@ -487,19 +573,20 @@ private:
         PostBand& d = post[b];
         d.used = p[pp(b, kPUsed)] > 0.5f; d.on = p[pp(b, kPOn)] > 0.5f;
         d.shape = (int)(p[pp(b, kPShape)] + 0.5f); d.slope = (int)(p[pp(b, kPSlope)] + 0.5f);
+        d.place = (int)clampf(std::round(p[placeParam(b)]), 0, kNumPlaces - 1);
     }
     void controlPost(int i) {
         PostBand& b = post[i];
         syncPost(i);
         const float fadeStep = (float)kCtl / (0.008f * fs); const int holdTicks = (int)(0.03f * fs / kCtl);
         const float smooth = 1.f - std::exp(-(float)kCtl / (0.015f * fs));
-        const bool structural = b.shape != b.curShape || b.slope != b.curSlope;
+        const bool structural = b.shape != b.curShape || b.slope != b.curSlope || b.place != b.curPlace;
         if (structural && (b.mix > 0.f || b.m > 0.f)) b.swapping = true;
-        if (structural && b.mix <= 0.f && b.m <= 0.f) { b.curShape = b.shape; b.curSlope = b.slope; b.reset(); b.swapping = false; b.hold = holdTicks; }
+        if (structural && b.mix <= 0.f && b.m <= 0.f) { b.curShape = b.shape; b.curSlope = b.slope; b.curPlace = b.place; b.reset(); b.swapping = false; b.hold = holdTicks; }
         if (b.hold > 0) --b.hold;
         const float target = (b.used && b.on && !b.swapping && b.hold == 0) ? 1.f : 0.f;
         if (b.mix < target) b.mix = std::min(target, b.mix + fadeStep); else if (b.mix > target) b.mix = std::max(target, b.mix - fadeStep);
-        if (b.mix <= 0.f && b.m <= 0.f && b.swapping) { b.curShape = b.shape; b.curSlope = b.slope; b.swapping = false; b.reset(); b.hold = holdTicks; }
+        if (b.mix <= 0.f && b.m <= 0.f && b.swapping) { b.curShape = b.shape; b.curSlope = b.slope; b.curPlace = b.place; b.swapping = false; b.reset(); b.hold = holdTicks; }
         b.m = clampf(b.m, 0.f, 1.f); if (std::fabs(b.m - b.mix) < 1e-4f) b.m = b.mix;
         b.dm = (b.mix - b.m) / kCtl;
         if (!b.used) { b.reset(); b.m = b.mix = 0; b.dm = 0; return; }
@@ -507,6 +594,19 @@ private:
         if (b.mix <= 0.f && b.hold > 0) { b.oct = tOct; b.gain = tG; b.lq = tQ; }
         else { b.oct += (tOct - b.oct) * smooth; b.gain += (tG - b.gain) * smooth; b.lq += (tQ - b.lq) * smooth; }
         b.design(fs);
+    }
+    // thickness: a stereo-linked compressor (fixed threshold, ratio up to 4:1) and soft saturation, both scaled by the amount
+    inline void thicken(float* wet) {
+        const float pk = std::max(std::fabs(wet[0]), std::fabs(wet[1]));
+        thEnv = pk > thEnv ? thEnv + (pk - thEnv) * thAtk : thEnv + (pk - thEnv) * thRelK;
+        float g = 1.f;
+        if (thEnv > kThThr) g = std::pow(kThThr / thEnv, 1.f - 1.f / thRatio);
+        const float inMs = wet[0] * wet[0] + wet[1] * wet[1];
+        for (int c = 0; c < 2; ++c) { const float v = wet[c] * g * thDrive; wet[c] = (std::fabs(v) < 3.f ? v * (27.f + v * v) / (27.f + 9.f * v * v) : std::copysign(1.f, v)) / thDrive; }
+        // make-up: match the long-term level before and after, so thickness changes the density, not the loudness
+        thIn += (inMs - thIn) * thAvgK; thOut += (wet[0] * wet[0] + wet[1] * wet[1] - thOut) * thAvgK;
+        const float mk = thick * (clampf(std::sqrt((thIn + 1e-12f) / (thOut + 1e-12f)), 0.5f, 8.f) - 1.f) + 1.f;
+        wet[0] *= mk; wet[1] *= mk;
     }
     inline float readPre(int c, float d) const {
         const float pos = (float)(prePos + preLen) - clampf(d, 0.f, (float)preLen - 4.f);     // always positive: truncation is floor
@@ -542,6 +642,15 @@ private:
     BQ tone; float toneZ[2][2] = {};
     PostBand post[kPostBands];
     float tDry = 1, tWet = 0, tOut = 1, gDry = 1, gWet = 0, gOut = 1;
+    // 2.0
+    int alg = kModern;
+    float vin[2][3] = {}, vinK = 0.6f;
+    float frz = 0, frzT = 0, dFrz = 0;
+    float thick = 0, thRatio = 1, thDrive = 1, thEnv = 0, thAtk = 0.01f, thRelK = 0.0005f, thIn = 0, thOut = 0, thAvgK = 0.0001f;
+    static constexpr float kThThr = 0.0316f;           // -30 dBFS
+    bool duckOn = false, gateOn = false, gateOpen = true;
+    float duckEnv = 0, duckAtk = 0.004f, duckRel = 0.9999f, duckG = 1, duckT = 1, dDuck = 0;
+    float gateEnv = 0, gateRel = 0.999f, gateG = 1, gateAtk = 0.01f, gateRelK = 0.0003f, gateHoldLeft = 0;
     float mIn[2] = {}, mOut[2] = {};
 };
 

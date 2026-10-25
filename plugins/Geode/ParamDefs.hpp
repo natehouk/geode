@@ -5,7 +5,7 @@
 
 namespace geode {
 
-static constexpr uint32_t kHintInteger = 1, kHintBoolean = 2, kHintLog = 4, kHintOutput = 8, kHintNoAuto = 16;
+static constexpr uint32_t kHintInteger = 1, kHintBoolean = 2, kHintLog = 4, kHintOutput = 8, kHintNoAuto = 16;   // NoAuto = a view switch
 struct ParamDef { const char* name; const char* sym; const char* unit; float min, max; uint32_t hints; };
 
 inline const ParamDef& paramDef(uint32_t i) {
@@ -16,7 +16,7 @@ inline const ParamDef& paramDef(uint32_t i) {
         auto set = [](uint32_t i, const char* n, const char* s, const char* u, float lo, float hi, uint32_t h) { t[i] = { n, s, u, lo, hi, h }; };
         const uint32_t I = kHintInteger, B = kHintBoolean | kHintInteger, O = kHintOutput, L = kHintLog;
         set(kSpace,        "Space",            "space",     "",   0, 1, 0);
-        set(kDecayRate,    "Decay Rate",       "decay",     "%",  50, 200, 0);
+        set(kDecayRate,    "Decay Rate",       "decay",     "%",  kDecayMin, kDecayMax, 0);
         set(kBrightness,   "Brightness",       "bright",    "%",  0, 100, 0);
         set(kCharacter,    "Character",        "character", "%",  0, 100, 0);
         set(kDistance,     "Distance",         "distance",  "%",  0, 100, 0);
@@ -64,6 +64,16 @@ inline const ParamDef& paramDef(uint32_t i) {
         set(kOutInR,   "Input Level R",  "o_inr",   "dB", -120, 24, O);
         set(kOutOutL,  "Output Level L", "o_outl",  "dB", -120, 24, O);
         set(kOutOutR,  "Output Level R", "o_outr",  "dB", -120, 24, O);
+        set(kAlgorithm,     "Algorithm",      "algorithm", "",   0, kNumAlgorithms - 1, I);
+        set(kThickness,     "Thickness",      "thickness", "%",  0, 100, 0);
+        set(kDucking,       "Ducking",        "ducking",   "%",  0, 100, 0);
+        set(kAutoGate,      "Auto Gate",      "autogate",  "",   0, 1, B);
+        set(kGateThreshold, "Gate Threshold", "gatethr",   "dB", -80, 0, 0);
+        set(kGateHold,      "Gate Hold",      "gatehold",  "ms", 10, 2000, L);
+        set(kFreeze,        "Freeze",         "freeze",    "",   0, 1, B);
+        static char ln[kPostBands][32], ls[kPostBands][16];
+        for (int b = 0; b < kPostBands; ++b) { std::snprintf(ln[b], 32, "Post EQ %d Channel", b + 1); std::snprintf(ls[b], 16, "p%dplace", b + 1); set(placeParam(b), ln[b], ls[b], "", 0, kNumPlaces - 1, I); }
+        set(kPiano,         "Piano Display",  "piano",     "",   0, 1, B | kHintNoAuto);
     }
     return t[i];
 }
@@ -78,7 +88,11 @@ inline const char* const* enumLabels(uint32_t p, int& count) {
     static const char* const dshape[] = { "Bell", "Low Shelf", "High Shelf", "Notch" };
     static const char* const pshape[] = { "Bell", "Low Shelf", "High Shelf", "Low Cut", "High Cut" };
     static const char* const slope[] = { "6 dB/oct", "12 dB/oct", "24 dB/oct", "48 dB/oct", "96 dB/oct" };
+    static const char* const alg[] = { "Modern", "Vintage", "Plate" };
+    static const char* const place[] = { "Stereo", "Mid", "Side", "Left", "Right" };
     if (p == kPredelayNote) { count = kNumNotes; return notes; }
+    if (p == kAlgorithm) { count = kNumAlgorithms; return alg; }
+    if (p >= kPostPlaceFirst && p <= kPostPlaceLast) { count = kNumPlaces; return place; }
     if (decayFieldOf(p) == kDShape) { count = kNumDShapes; return dshape; }
     if (postFieldOf(p) == kPShape) { count = kNumPShapes; return pshape; }
     if (postFieldOf(p) == kPSlope) { count = 5; return slope; }
